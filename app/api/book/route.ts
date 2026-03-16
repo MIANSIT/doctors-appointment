@@ -1,97 +1,57 @@
-import { NextRequest, NextResponse } from "next/server";
-import { google } from "googleapis";
-import { parseISO } from "date-fns";
+import { NextRequest, NextResponse } from 'next/server';
+import { google } from 'googleapis';
+import { getToken } from 'next-auth/jwt';
 
-export async function POST(req: NextRequest) {
+export const dynamic = 'force-dynamic';
+
+export async function POST(request: NextRequest) {
   try {
-    const body = await req.json();
-    const { date, startTime, endTime, patientName, patientEmail, patientPhone, notes } = body;
-
-    // Validate required fields
-    if (!date || !startTime || !endTime || !patientName || !patientEmail || !patientPhone) {
+    const token = await getToken({ req: request });
+    
+    if (!token?.accessToken) {
       return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 }
+        { error: 'Not authenticated' },
+        { status: 401 }
       );
     }
 
+    const body = await request.json();
+    const { startTime, endTime, summary, description } = body;
+
     // Initialize Google Calendar API
-    const auth = new google.auth.GoogleAuth({
-      credentials: {
-        client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-        private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
-      },
-      scopes: ["https://www.googleapis.com/auth/calendar"],
-    });
+    const auth = new google.auth.OAuth2();
+    auth.setCredentials({ access_token: token.accessToken as string });
+    
+    const calendar = google.calendar({ version: 'v3', auth });
 
-    const calendar = google.calendar({ version: "v3", auth });
-
-    // Create datetime strings
-    const selectedDate = parseISO(date);
-    const [startHour, startMinute] = startTime.split(":").map(Number);
-    const [endHour, endMinute] = endTime.split(":").map(Number);
-
-    const startDateTime = new Date(selectedDate);
-    startDateTime.setHours(startHour, startMinute, 0, 0);
-
-    const endDateTime = new Date(selectedDate);
-    endDateTime.setHours(endHour, endMinute, 0, 0);
-
-    // Create calendar event
+    // Create event
     const event = {
-      summary: `Appointment: ${patientName}`,
-      description: `
-Patient: ${patientName}
-Phone: ${patientPhone}
-Email: ${patientEmail}
-${notes ? `Notes: ${notes}` : ""}
-      `.trim(),
+      summary: summary || 'Appointment',
+      description: description || '',
       start: {
-        dateTime: startDateTime.toISOString(),
-        timeZone: "Asia/Dhaka",
+        dateTime: startTime,
+        timeZone: 'UTC',
       },
       end: {
-        dateTime: endDateTime.toISOString(),
-        timeZone: "Asia/Dhaka",
+        dateTime: endTime,
+        timeZone: 'UTC',
       },
-      attendees: [
-        { email: patientEmail, displayName: patientName },
-      ],
-      reminders: {
-        useDefault: false,
-        overrides: [
-          { method: "email", minutes: 24 * 60 }, // 1 day before
-          { method: "email", minutes: 60 }, // 1 hour before
-        ],
-      },
-      colorId: "10", // Green color for appointments
     };
 
     const response = await calendar.events.insert({
-      calendarId: process.env.DOCTOR_CALENDAR_ID,
+      calendarId: 'primary',
       requestBody: event,
-      sendUpdates: "all", // Send email confirmation to patient
     });
 
-    return NextResponse.json({
-      success: true,
-      eventId: response.data.id,
-      eventLink: response.data.htmlLink,
-      message: "Appointment booked successfully! You will receive a confirmation email.",
+    return NextResponse.json({ 
+      success: true, 
+      event: response.data 
     });
-  } catch (error: any) {
-    console.error("Booking Error:", error);
     
-    // Handle specific errors
-    if (error.code === 409) {
-      return NextResponse.json(
-        { error: "This time slot is no longer available. Please choose another." },
-        { status: 409 }
-      );
-    }
-
+  } catch (error) {
+    console.error('Error booking appointment:', error);
     return NextResponse.json(
-      { error: "Failed to book appointment", details: error.message },
+      { error: 'Failed to book appointment' },
       { status: 500 }
     );
   }
